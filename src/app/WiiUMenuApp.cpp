@@ -4,12 +4,14 @@
 #include "../core/DebugLog.hpp"
 #include <switch.h>
 #include <nxtc.h>
+#include <stb_image.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
-#include <sstream>
-#include <iomanip>
+#include <string>
+#include <thread>
+#include <atomic>
 
 namespace ui {
 
@@ -22,7 +24,7 @@ bool WiiUMenuApp::initialize() {
         DebugLog::log("[init] GPU FAILED");
         return false;
     }
-    m_renderer = new Renderer(m_gpu);
+    m_renderer = std::make_unique<Renderer>(m_gpu);
     DebugLog::log("[init] Renderer...");
     if (!m_renderer->initialize()) {
         DebugLog::log("[init] Renderer FAILED");
@@ -33,18 +35,19 @@ bool WiiUMenuApp::initialize() {
     m_input.initialize();
     DebugLog::log("[init] Audio...");
     m_audio.initialize();
-    m_audio.loadTrack("romfs:/music/bg1.mp3");
-    m_audio.loadTrack("romfs:/music/bg2.mp3");
-    m_audio.loadTrack("romfs:/music/bg3.mp3");
-    m_audio.loadTrack("romfs:/music/bg4.mp3");
+    std::string base = std::string(SD_ASSETS);
+    m_audio.loadTrack(base + "/music/bg1.mp3");
+    m_audio.loadTrack(base + "/music/bg2.mp3");
+    m_audio.loadTrack(base + "/music/bg3.mp3");
+    m_audio.loadTrack(base + "/music/bg4.mp3");
     m_audio.setVolume(0.4f);
-    m_audio.loadSfx(Sfx::Navigate,    "romfs:/sfx/deck_ui_navigation.wav");
-    m_audio.loadSfx(Sfx::Activate,    "romfs:/sfx/deck_ui_default_activation.wav");
-    m_audio.loadSfx(Sfx::PageChange,  "romfs:/sfx/deck_ui_tab_transition_01.wav");
-    m_audio.loadSfx(Sfx::ModalShow,   "romfs:/sfx/deck_ui_show_modal.wav");
-    m_audio.loadSfx(Sfx::ModalHide,   "romfs:/sfx/deck_ui_hide_modal.wav");
-    m_audio.loadSfx(Sfx::LaunchGame,  "romfs:/sfx/deck_ui_launch_game.wav");
-    m_audio.loadSfx(Sfx::ThemeToggle, "romfs:/sfx/deck_ui_switch_toggle_on.wav");
+    m_audio.loadSfx(Sfx::Navigate,    base + "/sfx/deck_ui_navigation.wav");
+    m_audio.loadSfx(Sfx::Activate,    base + "/sfx/deck_ui_default_activation.wav");
+    m_audio.loadSfx(Sfx::PageChange,  base + "/sfx/deck_ui_tab_transition_01.wav");
+    m_audio.loadSfx(Sfx::ModalShow,   base + "/sfx/deck_ui_show_modal.wav");
+    m_audio.loadSfx(Sfx::ModalHide,   base + "/sfx/deck_ui_hide_modal.wav");
+    m_audio.loadSfx(Sfx::LaunchGame,  base + "/sfx/deck_ui_launch_game.wav");
+    m_audio.loadSfx(Sfx::ThemeToggle, base + "/sfx/deck_ui_switch_toggle_on.wav");
     m_audio.setSfxVolume(0.7f);
     m_audio.play();
     DebugLog::log("[init] Audio OK, music playing");
@@ -67,50 +70,55 @@ bool WiiUMenuApp::initialize() {
 }
 
 void WiiUMenuApp::loadResources() {
-    m_fontNormal.load(m_gpu, *m_renderer, "romfs:/fonts/DejaVuSans.ttf", 24);
-    m_fontSmall.load(m_gpu, *m_renderer, "romfs:/fonts/DejaVuSans.ttf", 18);
+    std::string fontPath = std::string(SD_ASSETS) + "/fonts/DejaVuSans.ttf";
+    m_fontNormal.load(m_gpu, *m_renderer, fontPath, 24);
+    m_fontSmall.load(m_gpu, *m_renderer, fontPath, 18);
 
     loadAppEntries();
 }
 
 void WiiUMenuApp::loadAppEntries() {
-    NsApplicationRecord* records = new NsApplicationRecord[1024]();
+    // ── Phase 1: Gather app metadata + raw icon data (sequential IPC) ──
+    NsApplicationRecord records[1024] = {};
     s32 recordCount = 0;
     nsListApplicationRecord(records, 1024, 0, &recordCount);
 
-    NsApplicationControlData controlData;
+    static NsApplicationControlData controlData; // ~200 KB — reused across calls
+
+    struct PendingApp {
+        std::string id;
+        std::string title;
+        uint64_t    titleId = 0;
+        std::vector<uint8_t> iconData;   // raw JPEG/PNG bytes
+        uint8_t*    rgba = nullptr;       // decoded RGBA pixels (set in phase 2)
+        int         w = 0, h = 0;
+    };
+
+    std::vector<PendingApp> apps;
+    apps.reserve(recordCount);
+
+    char tidBuf[17];
 
     for (int i = 0; i < recordCount; ++i) {
         uint64_t tid = records[i].application_id;
+        std::snprintf(tidBuf, sizeof(tidBuf), "%016lX", (unsigned long)tid);
 
-        // Try the nxtc cache first (fast path)
         NxTitleCacheApplicationMetadata* meta = nxtcGetApplicationMetadataEntryById(tid);
         if (meta) {
-            std::stringstream ss;
-            ss << std::uppercase << std::setfill('0') << std::setw(16) << std::hex << tid;
-
-            int texIdx = -1;
+            PendingApp app;
+            app.id      = tidBuf;
+            app.title   = meta->name ? meta->name : "";
+            app.titleId = tid;
             if (meta->icon_data && meta->icon_size > 0) {
-                Texture tex;
-                if (tex.loadFromMemory(m_gpu, *m_renderer,
-                                       static_cast<const uint8_t*>(meta->icon_data), meta->icon_size)) {
-                    texIdx = (int)m_iconTextures.size();
-                    m_iconTextures.push_back(std::move(tex));
-                }
+                auto* ptr = static_cast<const uint8_t*>(meta->icon_data);
+                app.iconData.assign(ptr, ptr + meta->icon_size);
             }
-
-            AppEntry entry;
-            entry.id      = ss.str();
-            entry.title   = meta->name ? meta->name : "";
-            entry.titleId = tid;
-            entry.iconTexIndex = texIdx;
-            m_model.addEntry(std::move(entry));
-
+            apps.push_back(std::move(app));
             nxtcFreeApplicationMetadata(&meta);
             continue;
         }
 
-        // Fallback: retrieve via NS (slow on HOS 20.0.0+)
+        // Fallback: retrieve via NS
         size_t controlSize = 0;
         Result rc = nsGetApplicationControlData(NsApplicationControlSource_Storage, tid,
                                                 &controlData, sizeof(controlData), &controlSize);
@@ -128,36 +136,71 @@ void WiiUMenuApp::loadAppEntries() {
         if (!langEntry || langEntry->name[0] == '\0') continue;
 
         size_t iconSize = controlSize - sizeof(NacpStruct);
-
-        // Populate nxtc cache for next launch
         nxtcAddEntry(tid, &controlData.nacp, iconSize,
                      iconSize > 0 ? controlData.icon : nullptr, false);
 
-        std::stringstream ss;
-        ss << std::uppercase << std::setfill('0') << std::setw(16) << std::hex << tid;
+        PendingApp app;
+        app.id      = tidBuf;
+        app.title   = langEntry->name;
+        app.titleId = tid;
+        if (iconSize > 0)
+            app.iconData.assign(controlData.icon, controlData.icon + iconSize);
+        apps.push_back(std::move(app));
+    }
 
+    nxtcFlushCacheFile();
+
+    // ── Phase 2: Parallel JPEG decode (CPU-bound, use 3 workers) ──
+    DebugLog::log("[load] decoding %d icons on worker threads...", (int)apps.size());
+    {
+        std::atomic<int> nextJob{0};
+        auto workerFn = [&]() {
+            for (;;) {
+                int idx = nextJob.fetch_add(1, std::memory_order_relaxed);
+                if (idx >= (int)apps.size()) break;
+                auto& a = apps[idx];
+                if (a.iconData.empty()) continue;
+                int ch;
+                a.rgba = stbi_load_from_memory(
+                    a.iconData.data(), (int)a.iconData.size(),
+                    &a.w, &a.h, &ch, 4);
+                // Free compressed data now — no longer needed
+                a.iconData.clear();
+                a.iconData.shrink_to_fit();
+            }
+        };
+
+        constexpr int NUM_WORKERS = 3; // Switch has 4 cores; 1 main + 3 workers
+        std::thread workers[NUM_WORKERS];
+        for (int t = 0; t < NUM_WORKERS; ++t)
+            workers[t] = std::thread(workerFn);
+        for (int t = 0; t < NUM_WORKERS; ++t)
+            workers[t].join();
+    }
+    DebugLog::log("[load] decode done");
+
+    // ── Phase 3: Upload to GPU + build model (must be on main thread) ──
+    m_iconTextures.reserve(apps.size());
+
+    for (auto& app : apps) {
         int texIdx = -1;
-        if (iconSize > 0) {
+        if (app.rgba) {
             Texture tex;
-            if (tex.loadFromMemory(m_gpu, *m_renderer,
-                                   controlData.icon, iconSize)) {
+            if (tex.loadFromPixels(m_gpu, *m_renderer, app.rgba, app.w, app.h)) {
                 texIdx = (int)m_iconTextures.size();
                 m_iconTextures.push_back(std::move(tex));
             }
+            stbi_image_free(app.rgba);
+            app.rgba = nullptr;
         }
 
         AppEntry entry;
-        entry.id      = ss.str();
-        entry.title   = langEntry->name;
-        entry.titleId = tid;
+        entry.id      = std::move(app.id);
+        entry.title   = std::move(app.title);
+        entry.titleId = app.titleId;
         entry.iconTexIndex = texIdx;
         m_model.addEntry(std::move(entry));
     }
-
-    // Flush any new entries to disk
-    nxtcFlushCacheFile();
-
-    delete[] records;
 }
 
 void WiiUMenuApp::buildGrid() {
@@ -235,14 +278,189 @@ void WiiUMenuApp::buildGrid() {
         m_titlePill->setText(icon->title());
     }
     m_grid->startAppearAnimation();
+    buildSidebarButtons();
     applyTheme();
+}
+
+void WiiUMenuApp::buildSidebarButtons() {
+    // ── Load sidebar icon textures from romfs ──
+    // These are small PNG icons, they stay in romfs (unlike audio/fonts on SD).
+    struct IconDef { const char* path; };
+    static const IconDef iconFiles[] = {
+        {"romfs:/icons/album.png"},
+        {"romfs:/icons/eshop.png"},
+        {"romfs:/icons/controller.png"},
+        {"romfs:/icons/power.png"},
+    };
+    m_sidebarIcons.clear();
+    m_sidebarIcons.resize(4);
+    for (int i = 0; i < 4; ++i)
+        m_sidebarIcons[i].loadFromFile(m_gpu, *m_renderer, iconFiles[i].path);
+
+    // ── Layout: left side (2 buttons) + right side (2 buttons) ──
+    constexpr float btnSize = 70.f;
+    constexpr float gap     = 16.f;
+    constexpr float marginX = 14.f;
+
+    // Vertically centered in the grid area (y=90..630 → center=360)
+    // Left column: Album, eShop
+    // Right column: Controller pairing, Sleep
+    float leftX  = marginX;
+    float rightX = 1280.f - marginX - btnSize;
+    float totalH = 2 * btnSize + gap;
+    float startY = 360.f - totalH * 0.5f;
+
+    m_leftButtons.clear();
+    m_rightButtons.clear();
+
+    auto makeBtn = [&](Texture* tex, const std::string& label,
+                       std::function<void()> action) {
+        auto btn = std::make_shared<AppletButton>();
+        btn->setIcon(tex);
+        btn->setLabel(label);
+        btn->setAction(std::move(action));
+        return btn;
+    };
+
+    // Left column
+    {
+        auto album = makeBtn(&m_sidebarIcons[0], "Album",
+                             [this]() { launchAlbum(); });
+        album->setRect({leftX, startY, btnSize, btnSize});
+        m_leftButtons.push_back(std::move(album));
+
+        auto eshop = makeBtn(&m_sidebarIcons[1], "eShop",
+                             [this]() { launchEShop(); });
+        eshop->setRect({leftX, startY + btnSize + gap, btnSize, btnSize});
+        m_leftButtons.push_back(std::move(eshop));
+    }
+
+    // Right column
+    {
+        auto ctrl = makeBtn(&m_sidebarIcons[2], "Controllers",
+                            [this]() { launchControllerPairing(); });
+        ctrl->setRect({rightX, startY, btnSize, btnSize});
+        m_rightButtons.push_back(std::move(ctrl));
+
+        auto sleep = makeBtn(&m_sidebarIcons[3], "Sleep",
+                             [this]() { enterSleep(); });
+        sleep->setRect({rightX, startY + btnSize + gap, btnSize, btnSize});
+        m_rightButtons.push_back(std::move(sleep));
+    }
+}
+
+void WiiUMenuApp::handleSidebarTouch(float tx, float ty) {
+    auto tryButtons = [&](std::vector<std::shared_ptr<AppletButton>>& btns) {
+        for (auto& btn : btns) {
+            if (btn->hitTest(tx, ty)) {
+                m_audio.playSfx(Sfx::Activate);
+                btn->activate();
+                return true;
+            }
+        }
+        return false;
+    };
+    if (tryButtons(m_leftButtons)) return;
+    tryButtons(m_rightButtons);
+}
+
+// ── Applet launch helpers ────────────────────────────────────
+
+void WiiUMenuApp::launchAlbum() {
+    DebugLog::log("[applet] launching Album");
+    AppletHolder holder;
+    Result rc = appletCreateLibraryApplet(&holder, AppletId_LibraryAppletPhotoViewer, LibAppletMode_AllForeground);
+    if (R_FAILED(rc)) {
+        DebugLog::log("[applet] Album create FAIL: 0x%X", rc);
+        return;
+    }
+    appletHolderStart(&holder);
+    appletHolderJoin(&holder);
+    appletHolderClose(&holder);
+    DebugLog::log("[applet] Album closed");
+}
+
+void WiiUMenuApp::launchEShop() {
+    DebugLog::log("[applet] launching eShop");
+    AppletHolder holder;
+    Result rc = appletCreateLibraryApplet(&holder, AppletId_LibraryAppletShop, LibAppletMode_AllForeground);
+    if (R_FAILED(rc)) {
+        DebugLog::log("[applet] eShop create FAIL: 0x%X", rc);
+        return;
+    }
+    appletHolderStart(&holder);
+    appletHolderJoin(&holder);
+    appletHolderClose(&holder);
+    DebugLog::log("[applet] eShop closed");
+}
+
+void WiiUMenuApp::launchControllerPairing() {
+    DebugLog::log("[applet] launching Controller pairing");
+    HidLaControllerSupportArg arg;
+    hidLaCreateControllerSupportArg(&arg);
+    arg.hdr.player_count_max = 8;
+    arg.hdr.enable_single_mode = false;
+    Result rc = hidLaShowControllerSupportForSystem(nullptr, &arg, true);
+    if (R_FAILED(rc))
+        DebugLog::log("[applet] Controller FAIL: 0x%X", rc);
+    else
+        DebugLog::log("[applet] Controller pairing done");
+}
+
+void WiiUMenuApp::enterSleep() {
+    DebugLog::log("[applet] entering sleep");
+    appletStartSleepSequence(true);
 }
 
 void WiiUMenuApp::refreshAppList() {
     DebugLog::log("[refresh] re-fetching app list...");
 
+    // ── Quick check: has the app list actually changed? ──────────
+    // Fetch current titleId list from NS without touching any textures.
+    NsApplicationRecord records[1024] = {};
+    s32 recordCount = 0;
+    nsListApplicationRecord(records, 1024, 0, &recordCount);
+
+    // Compare directly against model — no temporary vector needed
+    bool listChanged = (recordCount != m_model.count());
+    if (!listChanged) {
+        for (int i = 0; i < recordCount; ++i) {
+            if (m_model.at(i).titleId != records[i].application_id) {
+                listChanged = true;
+                break;
+            }
+        }
+    }
+
+    if (!listChanged) {
+        // ── Fast path: same apps, just update suspended indicators ──
+        DebugLog::log("[refresh] app list unchanged, updating indicators only");
+        for (auto& ic : m_grid->allIcons())
+            ic->setSuspended(m_suspendedTitleId != 0 && ic->titleId() == m_suspendedTitleId);
+
+        // Update title pill
+        if (auto* cur = m_grid->focusManager().current()) {
+            auto* icon = static_cast<GlossyIcon*>(cur);
+            if (isAppSuspended(icon->titleId())) {
+                m_titlePill->setText(std::string("\xe2\x96\xb6  ") + icon->title());
+            } else {
+                m_titlePill->setText(icon->title());
+            }
+        }
+        return;
+    }
+
+    // ── Slow path: app list changed, full rebuild ────────────────
+    DebugLog::log("[refresh] app list CHANGED, full rebuild");
+
     // Remember which page we were on
     int prevPage = m_grid ? m_grid->currentPage() : 0;
+
+    // Ensure GPU has finished rendering before we destroy any textures/memory
+    m_gpu.waitIdle();
+
+    // Drop old icon widgets first (they hold Texture* pointers)
+    m_grid->clearChildren();
 
     // Clear old data
     m_model.clear();
@@ -317,6 +535,10 @@ void WiiUMenuApp::refreshAppList() {
 
     m_grid->startAppearAnimation();
 
+    // Reload sidebar icons (their GPU textures were invalidated by descriptor reset)
+    buildSidebarButtons();
+    applyTheme();
+
     DebugLog::log("[refresh] done, %d icons on page %d", m_model.count(), m_grid->currentPage());
 }
 
@@ -361,6 +583,15 @@ void WiiUMenuApp::applyTheme() {
     m_userSelect->setTextColor(m_theme.textPrimary);
     m_userSelect->setSecondaryTextColor(m_theme.textSecondary);
     m_userSelect->cursor().setColor(m_theme.cursorNormal);
+
+    // Sidebar applet buttons
+    auto applySidebarTheme = [&](std::shared_ptr<AppletButton>& btn) {
+        btn->setBaseColor(m_theme.panelBase);
+        btn->setBorderColor(m_theme.panelBorder);
+        btn->setHighlightColor(m_theme.panelHighlight);
+    };
+    for (auto& btn : m_leftButtons)  applySidebarTheme(btn);
+    for (auto& btn : m_rightButtons) applySidebarTheme(btn);
 }
 
 void WiiUMenuApp::toggleTheme() {
@@ -583,14 +814,53 @@ void WiiUMenuApp::handleInput() {
         return;
     }
 
-    if (m_input.isDown(Button::DLeft)  || m_input.isDown(Button::LStickL))
-        m_grid->focusManager().moveLeft();
-    if (m_input.isDown(Button::DRight) || m_input.isDown(Button::LStickR))
-        m_grid->focusManager().moveRight();
-    if (m_input.isDown(Button::DUp)    || m_input.isDown(Button::LStickU))
-        m_grid->focusManager().moveUp();
-    if (m_input.isDown(Button::DDown)  || m_input.isDown(Button::LStickD))
-        m_grid->focusManager().moveDown();
+    // ── Directional navigation with focus-zone awareness ──
+    bool wantLeft  = m_input.isDown(Button::DLeft)  || m_input.isDown(Button::LStickL);
+    bool wantRight = m_input.isDown(Button::DRight) || m_input.isDown(Button::LStickR);
+    bool wantUp    = m_input.isDown(Button::DUp)    || m_input.isDown(Button::LStickU);
+    bool wantDown  = m_input.isDown(Button::DDown)  || m_input.isDown(Button::LStickD);
+
+    if (m_focusZone == FocusZone::Grid) {
+        auto& fm = m_grid->focusManager();
+        int col = fm.focusIndex() % fm.columns();
+
+        if (wantLeft) {
+            if (col == 0 && !m_leftButtons.empty()) {
+                // At left edge of grid → jump to left sidebar
+                m_focusZone = FocusZone::LeftSidebar;
+                m_sidebarIdx = 0;
+                m_audio.playSfx(Sfx::Navigate);
+            } else {
+                fm.moveLeft();
+            }
+        }
+        if (wantRight) {
+            if (col == fm.columns() - 1 && !m_rightButtons.empty()) {
+                // At right edge of grid → jump to right sidebar
+                m_focusZone = FocusZone::RightSidebar;
+                m_sidebarIdx = 0;
+                m_audio.playSfx(Sfx::Navigate);
+            } else {
+                fm.moveRight();
+            }
+        }
+        if (wantUp)   fm.moveUp();
+        if (wantDown)  fm.moveDown();
+    } else {
+        // Focus is on a sidebar column
+        auto& btns = (m_focusZone == FocusZone::LeftSidebar) ? m_leftButtons : m_rightButtons;
+        if (wantUp   && m_sidebarIdx > 0)                        { --m_sidebarIdx; m_audio.playSfx(Sfx::Navigate); }
+        if (wantDown  && m_sidebarIdx < (int)btns.size() - 1)     { ++m_sidebarIdx; m_audio.playSfx(Sfx::Navigate); }
+        if ((m_focusZone == FocusZone::LeftSidebar  && wantRight) ||
+            (m_focusZone == FocusZone::RightSidebar && wantLeft)) {
+            // Return to grid
+            m_focusZone = FocusZone::Grid;
+            m_audio.playSfx(Sfx::Navigate);
+        }
+    }
+
+    if (wantLeft || wantRight || wantUp || wantDown)
+        updateCursor();
 
     if (m_input.isDown(Button::L)) {
         int p = m_grid->currentPage() - 1;
@@ -612,6 +882,14 @@ void WiiUMenuApp::handleInput() {
     }
 
     if (m_input.isDown(Button::A)) {
+        if (m_focusZone != FocusZone::Grid) {
+            // ── Sidebar button activation ──
+            auto& btns = (m_focusZone == FocusZone::LeftSidebar) ? m_leftButtons : m_rightButtons;
+            if (m_sidebarIdx >= 0 && m_sidebarIdx < (int)btns.size()) {
+                m_audio.playSfx(Sfx::Activate);
+                btns[m_sidebarIdx]->activate();
+            }
+        } else {
         auto* foc = m_grid->focusManager().current();
         if (foc) {
             GlossyIcon* icon = nullptr;
@@ -645,6 +923,7 @@ void WiiUMenuApp::handleInput() {
                 }
             }
         }
+        } // end grid A-press
     }
 
     constexpr float kTapThreshold   = 20.f;
@@ -666,46 +945,55 @@ void WiiUMenuApp::handleInput() {
         float dy = m_input.touchDeltaY();
         float dist2 = dx * dx + dy * dy;
 
-        if (dist2 < kTapThreshold * kTapThreshold && m_touchHitIndex >= 0) {
-            if (m_touchOnFocused) {
-                // Second tap on already-focused icon → confirm
-                auto* foc = m_grid->focusManager().current();
-                if (foc) {
-                    GlossyIcon* icon = nullptr;
-                    for (auto& ic : m_grid->allIcons()) {
-                        if (ic.get() == static_cast<GlossyIcon*>(foc)) {
-                            icon = ic.get();
-                            break;
+        if (dist2 < kTapThreshold * kTapThreshold) {
+            if (m_touchHitIndex >= 0) {
+                // Tap landed on a grid icon
+                if (m_touchOnFocused) {
+                    // Second tap on already-focused icon → confirm
+                    auto* foc = m_grid->focusManager().current();
+                    if (foc) {
+                        GlossyIcon* icon = nullptr;
+                        for (auto& ic : m_grid->allIcons()) {
+                            if (ic.get() == static_cast<GlossyIcon*>(foc)) {
+                                icon = ic.get();
+                                break;
+                            }
+                        }
+                        if (icon) {
+                            uint64_t tid = icon->titleId();
+
+                            // If this is the suspended app → resume directly
+                            if (isAppSuspended(tid)) {
+                                m_audio.playSfx(Sfx::LaunchGame);
+                                resumeApplication();
+                            } else {
+                                m_audio.playSfx(Sfx::Activate);
+                                Rect   focRect = foc->getFocusRect();
+                                const Texture* tex = icon->texture();
+                                float  cr      = icon->cornerRadius();
+                                Color  base    = m_theme.panelBase;
+                                Color  border  = m_theme.panelBorder;
+
+                                m_userSelect->show(
+                                    [this, focRect, tex, cr, base, border, tid](AccountUid uid) {
+                                        m_audio.playSfx(Sfx::LaunchGame);
+                                        m_launchAnim->start(focRect, tex, cr, base, border, tid, uid,
+                                            [this](uint64_t id, AccountUid u) { launchApplication(id, u); });
+                                    });
+                            }
                         }
                     }
-                    if (icon) {
-                        uint64_t tid = icon->titleId();
-
-                        // If this is the suspended app → resume directly
-                        if (isAppSuspended(tid)) {
-                            m_audio.playSfx(Sfx::LaunchGame);
-                            resumeApplication();
-                        } else {
-                            m_audio.playSfx(Sfx::Activate);
-                            Rect   focRect = foc->getFocusRect();
-                            const Texture* tex = icon->texture();
-                            float  cr      = icon->cornerRadius();
-                            Color  base    = m_theme.panelBase;
-                            Color  border  = m_theme.panelBorder;
-
-                            m_userSelect->show(
-                                [this, focRect, tex, cr, base, border, tid](AccountUid uid) {
-                                    m_audio.playSfx(Sfx::LaunchGame);
-                                    m_launchAnim->start(focRect, tex, cr, base, border, tid, uid,
-                                        [this](uint64_t id, AccountUid u) { launchApplication(id, u); });
-                                });
-                        }
-                    }
+                } else {
+                    // First tap on a different icon → just move the cursor there
+                    m_focusZone = FocusZone::Grid;
+                    m_grid->focusManager().setFocus(m_touchHitIndex);
+                    updateCursor();
                 }
             } else {
-                // First tap on a different icon → just move the cursor there
-                m_grid->focusManager().setFocus(m_touchHitIndex);
-                updateCursor();
+                // Tap missed the grid → check sidebar buttons
+                float tx = m_input.touchStartX();
+                float ty = m_input.touchStartY();
+                handleSidebarTouch(tx, ty);
             }
         } else if (std::abs(dx) > kSwipeThreshold && std::abs(dx) > std::abs(dy) * 1.5f) {
             // Horizontal swipe – change page
@@ -756,6 +1044,10 @@ void WiiUMenuApp::render() {
         m_background->render(*m_renderer);
         m_grid->render(*m_renderer);
 
+        // Sidebar applet buttons
+        for (auto& btn : m_leftButtons)  btn->render(*m_renderer);
+        for (auto& btn : m_rightButtons) btn->render(*m_renderer);
+
         // Touch-press highlight: subtle overlay on the touched (non-focused) icon
         if (m_touchHitIndex >= 0 && !m_touchOnFocused && m_input.isTouching()) {
             auto icons = m_grid->pageIcons();
@@ -794,10 +1086,21 @@ void WiiUMenuApp::render() {
 }
 
 void WiiUMenuApp::updateCursor() {
-    auto* cur = m_grid->focusManager().current();
-    if (cur) {
-        Rect fr = cur->getFocusRect();
-        m_cursor->moveTo(fr.expanded(4.f));
+    if (m_focusZone != FocusZone::Grid) {
+        // Cursor on a sidebar button
+        auto& btns = (m_focusZone == FocusZone::LeftSidebar) ? m_leftButtons : m_rightButtons;
+        if (m_sidebarIdx >= 0 && m_sidebarIdx < (int)btns.size()) {
+            Rect r = btns[m_sidebarIdx]->rect();
+            m_cursor->moveTo(r.expanded(4.f));
+            m_titlePill->setText(btns[m_sidebarIdx]->label());
+            m_titlePill->setVisible(true);
+        }
+    } else {
+        auto* cur = m_grid->focusManager().current();
+        if (cur) {
+            Rect fr = cur->getFocusRect();
+            m_cursor->moveTo(fr.expanded(4.f));
+        }
     }
 }
 
@@ -972,8 +1275,7 @@ void WiiUMenuApp::shutdown() {
     // Service exits (account, ns, applet, …) are handled by __appExit
     nxtcExit();
     m_audio.shutdown();
-    delete m_renderer;
-    m_renderer = nullptr;
+    m_renderer.reset();
     m_gpu.shutdown();
 }
 

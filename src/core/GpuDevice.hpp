@@ -47,11 +47,11 @@ public:
     static constexpr int NUM_FB    = 2;
 
     // Max resources
-    static constexpr int MAX_TEXTURES   = 128;
+    static constexpr int MAX_TEXTURES   = 512;
     static constexpr int MAX_SAMPLERS   = 16;
     static constexpr int MAX_VERTICES   = 65536;
     static constexpr int VTX_BUF_SIZE   = MAX_VERTICES * 32;   // 32 bytes per vertex
-    static constexpr int IDX_BUF_SIZE   = MAX_VERTICES * 6 * 4;// generous
+    static constexpr int IDX_BUF_SIZE   = 256;              // reserved (non-indexed draws only)
     static constexpr int VS_UBO_SIZE    = 256;                 // projection matrix (64 used, 256-aligned)
     static constexpr int FS_UBO_SIZE    = 256;                 // fragment params (16 used, 256-aligned)
     static constexpr int CMD_BUF_SIZE   = 256 * 1024;
@@ -63,6 +63,7 @@ public:
     // Frame lifecycle
     int  beginFrame();              // Returns slot index
     void endFrame();                // Submit + present
+    void waitIdle();                // Wait for GPU to finish all pending work
 
     // Accessors
     dk::Device   device()  const { return m_dev; }

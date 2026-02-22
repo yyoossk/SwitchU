@@ -17,7 +17,9 @@ static void ortho(float* m, float w, float h) {
     m[15] =  1.f;
 }
 
-Renderer::Renderer(GpuDevice& gpu) : m_gpu(gpu) {}
+Renderer::Renderer(GpuDevice& gpu) : m_gpu(gpu) {
+    m_clipStack.reserve(8);  // avoid reallocation during rendering
+}
 Renderer::~Renderer() {}
 
 bool Renderer::initialize() {
@@ -294,6 +296,7 @@ void Renderer::drawRoundedRect(const Rect& r, const Color& c, float radius) {
 
     // Fan from center
     constexpr int segs = 8; // per corner
+    constexpr int maxPts = (segs + 1) * 4; // 36 points max
     const float pi2 = 3.14159265f * 0.5f;
 
     struct {float cx, cy; float a0;} corners[4] = {
@@ -303,19 +306,20 @@ void Renderer::drawRoundedRect(const Rect& r, const Color& c, float radius) {
         {r.right() - rad, r.bottom() - rad,   pi2*3},
     };
 
-    // Build perimeter points
-    std::vector<Vec2> pts;
+    // Build perimeter points on stack
+    Vec2 pts[maxPts];
+    int ptCount = 0;
     for (auto& cn : corners) {
         for (int i = 0; i <= segs; ++i) {
             float a = cn.a0 + pi2 * i / segs;
-            pts.push_back({cn.cx + std::cos(a) * rad, cn.cy - std::sin(a) * rad});
+            pts[ptCount++] = {cn.cx + std::cos(a) * rad, cn.cy - std::sin(a) * rad};
         }
     }
 
     // Triangle fan from center
-    for (size_t i = 0; i < pts.size(); ++i) {
+    for (int i = 0; i < ptCount; ++i) {
         auto& p0 = pts[i];
-        auto& p1 = pts[(i + 1) % pts.size()];
+        auto& p1 = pts[(i + 1) % ptCount];
         addVertex(cx, cy, 0, 0, c);
         addVertex(p0.x, p0.y, 0, 0, c);
         addVertex(p1.x, p1.y, 0, 0, c);
@@ -329,6 +333,7 @@ void Renderer::drawRoundedRectOutline(const Rect& r, const Color& c, float radiu
     bindTexture(-1);
 
     constexpr int segs = 8;
+    constexpr int maxPts = (segs + 1) * 4; // 36
     const float pi2 = 3.14159265f * 0.5f;
 
     struct {float cx, cy; float a0;} corners[4] = {
@@ -338,19 +343,21 @@ void Renderer::drawRoundedRectOutline(const Rect& r, const Color& c, float radiu
         {r.right() - rad, r.bottom() - rad,   pi2*3},
     };
 
-    std::vector<Vec2> outer, inner;
+    Vec2 outer[maxPts], inner[maxPts];
+    int ptCount = 0;
     for (auto& cn : corners) {
         for (int i = 0; i <= segs; ++i) {
             float a = cn.a0 + pi2 * i / segs;
             float ca = std::cos(a), sa = std::sin(a);
-            outer.push_back({cn.cx + ca * rad,       cn.cy - sa * rad});
-            inner.push_back({cn.cx + ca * (rad - t), cn.cy - sa * (rad - t)});
+            outer[ptCount] = {cn.cx + ca * rad,       cn.cy - sa * rad};
+            inner[ptCount] = {cn.cx + ca * (rad - t), cn.cy - sa * (rad - t)};
+            ptCount++;
         }
     }
 
     // Triangle strip between outer and inner
-    for (size_t i = 0; i < outer.size(); ++i) {
-        size_t j = (i + 1) % outer.size();
+    for (int i = 0; i < ptCount; ++i) {
+        int j = (i + 1) % ptCount;
         addVertex(outer[i].x, outer[i].y, 0, 0, c);
         addVertex(inner[i].x, inner[i].y, 0, 0, c);
         addVertex(outer[j].x, outer[j].y, 0, 0, c);
@@ -428,6 +435,7 @@ void Renderer::drawTextureRounded(const Texture* tex, const Rect& dest, float ra
     };
 
     constexpr int segs = 8;
+    constexpr int maxPts = (segs + 1) * 4; // 36
     const float pi2 = 3.14159265f * 0.5f;
 
     struct { float cx, cy; float a0; } corners[4] = {
@@ -437,21 +445,22 @@ void Renderer::drawTextureRounded(const Texture* tex, const Rect& dest, float ra
         {dest.right() - rad, dest.bottom() - rad,   pi2 * 3},
     };
 
-    // Build perimeter
-    std::vector<Vec2> pts;
+    // Build perimeter on stack
+    Vec2 pts[maxPts];
+    int ptCount = 0;
     for (auto& cn : corners) {
         for (int i = 0; i <= segs; ++i) {
             float a = cn.a0 + pi2 * i / segs;
-            pts.push_back({cn.cx + std::cos(a) * rad,
-                           cn.cy - std::sin(a) * rad});
+            pts[ptCount++] = {cn.cx + std::cos(a) * rad,
+                              cn.cy - std::sin(a) * rad};
         }
     }
 
     // Fan from center with UV coords
     Vec2 cuv = toUV(fcx, fcy);
-    for (size_t i = 0; i < pts.size(); ++i) {
+    for (int i = 0; i < ptCount; ++i) {
         auto& p0 = pts[i];
-        auto& p1 = pts[(i + 1) % pts.size()];
+        auto& p1 = pts[(i + 1) % ptCount];
         Vec2 uv0 = toUV(p0.x, p0.y);
         Vec2 uv1 = toUV(p1.x, p1.y);
         addVertex(fcx,  fcy,  cuv.x, cuv.y, tint);

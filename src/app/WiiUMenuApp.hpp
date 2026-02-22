@@ -15,6 +15,7 @@
 #include "AudioManager.hpp"
 #include "LaunchAnimation.hpp"
 #include "UserSelectScreen.hpp"
+#include "AppletButton.hpp"
 #include "../ui/Background.hpp"
 #include <memory>
 #include <vector>
@@ -22,6 +23,9 @@
 #include <switch.h>
 
 namespace ui {
+
+// Assets live on the SD card so romfs stays small (shaders only).
+static constexpr const char* SD_ASSETS = "sdmc:/switch/SwitchU";
 
 // Messages that background threads push for the main loop to handle.
 enum class SysAction {
@@ -63,9 +67,16 @@ private:
     void updateCursor();
     void drawPageIndicator();
     void drawFocusedTitle();
+    void buildSidebarButtons();
+    void handleSidebarTouch(float tx, float ty);
+    // Applet launchers
+    void launchAlbum();
+    void launchEShop();
+    void launchControllerPairing();
+    void enterSleep();
 
     GpuDevice  m_gpu;
-    Renderer*  m_renderer = nullptr;
+    std::unique_ptr<Renderer> m_renderer;
     Input      m_input;
 
     Font  m_fontNormal;
@@ -86,6 +97,16 @@ private:
     std::shared_ptr<UserSelectScreen>    m_userSelect;
 
     AudioManager m_audio;
+
+    // Sidebar applet buttons (left + right columns)
+    std::vector<Texture> m_sidebarIcons;                    // loaded from romfs:/icons/
+    std::vector<std::shared_ptr<AppletButton>> m_leftButtons;
+    std::vector<std::shared_ptr<AppletButton>> m_rightButtons;
+
+    // Focus zone: which area currently owns the cursor
+    enum class FocusZone { LeftSidebar, Grid, RightSidebar };
+    FocusZone m_focusZone  = FocusZone::Grid;
+    int       m_sidebarIdx = 0;   // index within the active sidebar column
 
     bool m_running = true;
 

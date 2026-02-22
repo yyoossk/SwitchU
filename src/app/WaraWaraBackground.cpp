@@ -5,7 +5,7 @@
 
 namespace ui {
 
-WaraWaraBackground::WaraWaraBackground() { regenerate(); }
+WaraWaraBackground::WaraWaraBackground() { regenerate(30); }
 
 void WaraWaraBackground::regenerate(int count) {
     m_shapes.resize(count);
@@ -75,7 +75,7 @@ void WaraWaraBackground::drawRoundedShape(Renderer& ren, const Shape& s, const C
 
     switch (s.type) {
     case Circle:
-        ren.drawCircle(s.pos, sz, c, 20);
+        ren.drawCircle(s.pos, sz, c, 12);
         break;
     case Triangle: {
         Vec2 p0 = rot(0,             -sz);

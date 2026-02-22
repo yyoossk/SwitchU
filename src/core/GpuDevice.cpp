@@ -106,6 +106,10 @@ void GpuDevice::endFrame() {
     m_queue.presentImage(m_swapchain, m_slot);
 }
 
+void GpuDevice::waitIdle() {
+    if (m_queue) m_queue.waitIdle();
+}
+
 dk::UniqueMemBlock GpuDevice::allocImageMemory(uint32_t size) {
     size = (size + kGpuAlign - 1) & ~(kGpuAlign - 1);
     return dk::MemBlockMaker{m_dev, size}

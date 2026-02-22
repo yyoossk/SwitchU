@@ -31,14 +31,16 @@ QLAUNCH_TID	:=	0100000000001000
 #---------------------------------------------------------------------------------
 ARCH	:=	-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE
 
-CFLAGS	:=	-g -Wall -O2 -ffunction-sections \
+CFLAGS	:=	-Wall -O3 -flto=auto -ffunction-sections -fdata-sections \
+			-ffast-math -DNDEBUG \
 			$(ARCH) $(DEFINES)
 CFLAGS	+=	$(INCLUDE) -D__SWITCH__
 
 CXXFLAGS	:= $(CFLAGS) -std=c++20 -fno-rtti -fexceptions
 
 ASFLAGS	:=	-g $(ARCH)
-LDFLAGS	=	-specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
+LDFLAGS	=	-specs=$(DEVKITPRO)/libnx/switch.specs $(ARCH) -flto=auto \
+			-Wl,-Map,$(notdir $*.map) -Wl,--gc-sections
 
 LIBS	:=	-ldeko3d -lnxtc -lnx -lz \
 			`$(PREFIX)pkg-config --libs SDL2_mixer SDL2_ttf sdl2`
@@ -106,6 +108,7 @@ export APP_JSON	:=	$(TOPDIR)/$(CONFIG_JSON)
 # SD card output directory
 SD_OUT		:=	$(CURDIR)/sd_out
 SD_CONTENTS	:=	$(SD_OUT)/atmosphere/contents/$(QLAUNCH_TID)
+SD_ASSETS	:=	$(SD_OUT)/switch/SwitchU
 
 .PHONY: all clean shaders libnxtc install
 
@@ -125,10 +128,19 @@ install: all
 	@mkdir -p $(SD_CONTENTS)
 	@cp $(TARGET).nsp $(SD_CONTENTS)/exefs.nsp
 	@rm -rf $(SD_CONTENTS)/romfs
-	@cp -r $(ROMFS) $(SD_CONTENTS)/romfs
+	@mkdir -p $(SD_CONTENTS)/romfs/shaders
+	@cp $(ROMFS)/shaders/*.dksh $(SD_CONTENTS)/romfs/shaders/
+	@mkdir -p $(SD_CONTENTS)/romfs/icons
+	@cp $(ROMFS)/icons/*.png $(SD_CONTENTS)/romfs/icons/
+	@echo "Copying assets to SD card (sdmc:/switch/SwitchU/)..."
+	@mkdir -p $(SD_ASSETS)/fonts $(SD_ASSETS)/music $(SD_ASSETS)/sfx
+	@cp $(ROMFS)/fonts/* $(SD_ASSETS)/fonts/
+	@cp $(ROMFS)/music/* $(SD_ASSETS)/music/
+	@cp $(ROMFS)/sfx/*   $(SD_ASSETS)/sfx/
 	@echo "Done! Copy sd_out/ contents to your SD card."
 	@echo "  $(SD_CONTENTS)/exefs.nsp"
-	@echo "  $(SD_CONTENTS)/romfs/"
+	@echo "  $(SD_CONTENTS)/romfs/shaders/"
+	@echo "  $(SD_ASSETS)/ (fonts, music, sfx)"
 
 clean:
 	@echo clean ...
