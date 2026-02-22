@@ -104,6 +104,12 @@ int Renderer::registerTexture(const dk::ImageView& view) {
     return slot;
 }
 
+void Renderer::resetTextureSlots() {
+    // Slot 0 is the 1x1 white pixel; keep it, reset everything after.
+    m_nextDescSlot = 1;
+    m_curTexSlot = -1;
+}
+
 void Renderer::bindTexture(int slot) {
     if (slot != m_curTexSlot) {
         bool newTexturing = (slot >= 0);

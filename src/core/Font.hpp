@@ -25,6 +25,9 @@ public:
     // Measure text dimensions
     Vec2 measure(const std::string& text) const;
 
+    // Clear all cached glyph textures (call before GPU descriptor reset)
+    void clearCache() { m_cache.clear(); }
+
     int ptSize() const { return m_ptSize; }
 
 private:

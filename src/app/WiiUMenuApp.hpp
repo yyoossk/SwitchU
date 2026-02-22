@@ -42,7 +42,8 @@ public:
     void shutdown();
 
 private:
-    void loadResources();
+    void loadResources();     // fonts + apps (called once at init)
+    void loadAppEntries();    // just app list + icon textures (safe to repeat)
     void buildGrid();
     void refreshAppList();   // re-fetch apps + covers on Home return
     void applyTheme();

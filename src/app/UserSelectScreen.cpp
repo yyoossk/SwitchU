@@ -14,6 +14,8 @@ namespace ui {
 // Load every system account: nickname + profile icon → GPU
 // ────────────────────────────────────────────────────────────
 bool UserSelectScreen::loadUsers(GpuDevice& gpu, Renderer& ren) {
+    m_users.clear();   // drop old entries (and their GPU textures)
+
     AccountUid uids[8] = {};
     s32 count = 0;
     Result rc = accountListAllUsers(uids, 8, &count);

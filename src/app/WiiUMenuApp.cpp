@@ -70,6 +70,10 @@ void WiiUMenuApp::loadResources() {
     m_fontNormal.load(m_gpu, *m_renderer, "romfs:/fonts/DejaVuSans.ttf", 24);
     m_fontSmall.load(m_gpu, *m_renderer, "romfs:/fonts/DejaVuSans.ttf", 18);
 
+    loadAppEntries();
+}
+
+void WiiUMenuApp::loadAppEntries() {
     NsApplicationRecord* records = new NsApplicationRecord[1024]();
     s32 recordCount = 0;
     nsListApplicationRecord(records, 1024, 0, &recordCount);
@@ -244,8 +248,16 @@ void WiiUMenuApp::refreshAppList() {
     m_model.clear();
     m_iconTextures.clear();
 
-    // Re-fetch from NS + nxtc
-    loadResources();
+    // Reset GPU descriptor slots so new textures reuse slots 1+
+    m_renderer->resetTextureSlots();
+    // Flush font glyph caches (they reference old descriptor slots)
+    m_fontNormal.clearCache();
+    m_fontSmall.clearCache();
+    // Reload user avatars (they also hold GPU textures)
+    m_userSelect->loadUsers(m_gpu, *m_renderer);
+
+    // Re-fetch from NS + nxtc (fonts already loaded, just refresh app list)
+    loadAppEntries();
     DebugLog::log("[refresh] found %d apps", m_model.count());
 
     // Rebuild icon widgets

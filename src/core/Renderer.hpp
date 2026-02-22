@@ -71,6 +71,9 @@ public:
     // Texture descriptor management
     int registerTexture(const dk::ImageView& view);
     void bindTexture(int slot);
+    /// Reset all texture descriptor slots (except slot 0 = white pixel).
+    /// Call before re-loading textures to reclaim slots.
+    void resetTextureSlots();
 
     GpuDevice& gpu() { return m_gpu; }
 
