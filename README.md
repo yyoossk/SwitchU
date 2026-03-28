@@ -37,14 +37,15 @@
 
 ## Screenshots
 
-![](./screenshots/1.png)
+![](./screenshots/1.jpg)
 
 <details>
   <summary><b>More screenshots</b></summary>
 
-![](./screenshots/2.png)
-![](./screenshots/3.png)
-![](./screenshots/4.png)
+![](./screenshots/2.jpg)
+![](./screenshots/3.jpg)
+![](./screenshots/4.jpg)
+![](./screenshots/5.jpg)
 
 </details>
 
