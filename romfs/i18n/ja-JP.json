@@ -94,7 +94,7 @@
       "auto_app_download_desc": "インストール済みのゲームのアップデートを自動的にダウンロードします。",
       "mac_address": "MACアドレス",
       "dns": "DNS",
-      "dns_auto": "自動 (DHCP)"
+      "dns_auto": "自動(DHCP)"
     },
     "controllers": {
       "vibration": "振動",
@@ -174,7 +174,7 @@
     }
   },
   "userselect": {
-    "title": "誰がプレーする？"
+    "title": "ユーザーを選択"
   },
   "languages": {
     "ja-JP": "日本語",
